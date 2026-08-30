@@ -78,7 +78,7 @@ const funded = (whole) => [{
 }];
 const OTHER_COIN_ONLY = [{ coinId: 'some-other-coin', confirmedAmount: base(999).toString() }];
 
-const makeClient = (assetRows) => {
+const makeClient = (assetRows, created = false) => {
   const sphere = {
     payments: {
       rows: assetRows,
@@ -90,7 +90,7 @@ const makeClient = (assetRows) => {
     },
     identity: { chainPubkey: '02' + 'a'.repeat(64) },
   };
-  return { client: new SphereClient(sphere, COIN, 'device-test', false), sphere };
+  return { client: new SphereClient(sphere, COIN, 'device-test', created), sphere };
 };
 
 console.log('════════ balance-outage unit proof (offline) ════════');
@@ -185,6 +185,25 @@ console.log('\n[8] and a funded wallet is never re-minted');
   const { client, sphere } = makeClient(funded(100));
   await client.bootstrapMintIfNeeded();
   ok(sphere.payments.mints === 0, 'above the floor ⇒ no mint', sphere.payments.mints);
+}
+
+console.log('\n[9] a BRAND-NEW wallet may still bootstrap on an absent row');
+{
+  // The guard above must not break the documented testnet2 bootstrap. A wallet
+  // GENERATED THIS BOOT cannot hold funds, so there an absent row is definitively
+  // a zero rather than an ambiguous silence — `created` is the discriminator.
+  const { client, sphere } = makeClient(OUTAGE, true);
+  await client.bootstrapMintIfNeeded();
+  ok(sphere.payments.mints === 1,
+    'a first-run wallet with no row yet still self-mints', sphere.payments.mints);
+}
+
+console.log('\n[10] but an EXISTING wallet with an absent row never does');
+{
+  const { client, sphere } = makeClient(OUTAGE, false);
+  await client.bootstrapMintIfNeeded();
+  ok(sphere.payments.mints === 0,
+    'the same silence on a pre-existing wallet is still refused', sphere.payments.mints);
 }
 
 console.log(`\n  ${passed} passed, ${failed} failed`);

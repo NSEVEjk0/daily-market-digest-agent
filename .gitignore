@@ -23,3 +23,6 @@ test-*.mjs
 # embed an oracle API key and read a mnemonic, so they must never be published.
 !test-balance-outage-unit.mjs
 !test-refund-truth-unit.mjs
+
+# Local operator probes — read a mnemonic; never published.
+probe-*.mjs
