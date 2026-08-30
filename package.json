@@ -14,7 +14,8 @@
     "mint": "node src/index.js --mint",
     "run-now": "node src/index.js --run-now",
     "preview": "node src/index.js --preview",
-    "test": "node test-balance-outage-unit.mjs && node test-refund-truth-unit.mjs"
+    "demo": "node src/demo.js",
+    "test": "node test-blind-digest-unit.mjs && node test-refund-truth-unit.mjs"
   },
   "keywords": [
     "unicity",

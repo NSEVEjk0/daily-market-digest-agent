@@ -88,7 +88,9 @@ const makeClient = (refundResult = { status: 'ok' }) => ({
 /**
  * Same client, but fulfilment blows up. `nametag` is read by buildReport outside any
  * try/catch, so a throwing getter is a deterministic fault injector for the catch
- * branch. (A market outage does NOT land here — market.js swallows those itself.)
+ * branch. (A market OUTAGE also lands there now, deliberately — see
+ * test-blind-digest-unit.mjs. This suite is about the refund itself, so it injects a
+ * plain fault and leaves the blind-round refusal to that file.)
  */
 const makeBrokenClient = (refundResult) => {
   const c = makeClient(refundResult);

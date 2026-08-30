@@ -13,11 +13,16 @@
  *
  * Fan-out is bounded (per-run cap + shared rate limiter) and idempotent per slot,
  * so a restart mid-run never double-delivers and never floods the relay.
+ *
+ * The slot key does double duty and the asymmetry is deliberate: it stops a served
+ * slot being served twice, AND it keeps an unserved slot owed. So a run that could
+ * not read the market publishes nothing and leaves the slot unmarked, while a run
+ * that published marks it before anything else can retry.
  */
 
 import config from '../config.js';
 import { createLogger } from '../logger.js';
-import { scanMarket, marketPulse, scanForTopics } from '../market.js';
+import { scanMarket, marketPulse, scanForTopics, reachOf } from '../market.js';
 import { buildDigest, signDigest, renderFull } from '../digest.js';
 
 const log = createLogger('delivery');
@@ -73,12 +78,21 @@ export async function buildReport(client, { label, topics = null, fallbackFeatur
   let scan;
   if (topics && topics.length) {
     const p = pulse ?? (await marketPulse(client, { freshWithinDays: config.scan.freshWithinDays }));
-    const featured = await scanForTopics(client, topics, {
+    const { featured, seedsTried, seedsFailed } = await scanForTopics(client, topics, {
       perSeedLimit: config.scan.perSeedLimit,
       minScore: config.scan.minScore,
       fallback: fallbackFeatured,
     });
-    scan = { pulse: p, featured, scannedAt: new Date().toISOString(), seeds: topics };
+    // A personalized report is held to the same standard as the shared one: if the
+    // subscriber's own topics went unanswered AND the pulse went unanswered, this
+    // round is blind for them too, whatever the shared scan managed to see.
+    scan = {
+      pulse: p,
+      featured,
+      scannedAt: new Date().toISOString(),
+      seeds: topics,
+      reach: reachOf({ pulseOk: p.ok !== false, seedsTried, seedsFailed }),
+    };
   } else {
     scan = await scanMarket(client, {
       seeds: config.scan.seedQueries,
@@ -101,11 +115,17 @@ export async function buildReport(client, { label, topics = null, fallbackFeatur
   return { scan, digest };
 }
 
-/** Sign a built digest and render the full paid body (with proof-of-time). */
+/**
+ * Sign a built digest and render the full paid body (with proof-of-time).
+ *
+ * `digest.signable` is false for a blind round, and it is passed through rather
+ * than re-derived here: the decision of what may be signed belongs to the code
+ * that knows what was observed, not to the code that formats the output.
+ */
 export function finalizeFull(client, digest) {
-  const proof = signDigest(client, digest.hash, digest.generatedAt);
+  const proof = signDigest(client, digest.hash, digest.generatedAt, { signable: digest.signable !== false });
   const fullText = renderFull(digest, proof);
-  return { proof, fullText };
+  return { proof, fullText, signed: !!proof.signature };
 }
 
 /**
@@ -181,6 +201,36 @@ export async function runScheduledDigest(client, state, rateLimit, { slot, label
 
   log.info(`Generating digest for ${label}${slot ? ` (slot ${slot})` : ''}…`);
   const { scan, digest } = await buildReport(client, { label });
+
+  // A blind round publishes NOTHING and, critically, does not consume the slot.
+  //
+  // Marking it delivered would be the expensive mistake: the slot key is the only
+  // record that this scheduled digest still owes the world a report, and once it is
+  // in `deliveredSlots` it never runs again. So an outage lasting one minute would
+  // cost a whole slot, silently, and `status` would show a digest that was never
+  // published. Left unmarked, the next tick inside the catch-up grace window
+  // retries, and the slot fires exactly once when the board answers.
+  if (digest.blind) {
+    log.error(
+      `Slot ${slot ?? label}: the market could not be read (recent-listings feed silent, ` +
+        `${scan.reach.seedsFailed}/${scan.reach.seedsTried} sweeps silent). Publishing nothing, ` +
+        `signing nothing, and leaving the slot OPEN so a later tick can serve it.`,
+    );
+    state.setLastDigest({
+      slot: slot ?? null,
+      label,
+      generatedAt: digest.generatedAt,
+      hash: null,
+      live: null,
+      featured: 0,
+      quiet: false,
+      blind: true,
+      subscribersDelivered: 0,
+    });
+    state.save();
+    return { skipped: true, reason: 'market-unreadable', slot, blind: true };
+  }
+
   const { proof, fullText } = finalizeFull(client, digest);
 
   // 1) Free public teaser on the broadcast channel.
@@ -211,6 +261,9 @@ export async function runScheduledDigest(client, state, rateLimit, { slot, label
     live: digest.stats.total,
     featured: digest.stats.featuredCount,
     quiet: digest.quiet,
+    blind: false,
+    incomplete: digest.incomplete,
+    signed: !!proof.signature,
     subscribersDelivered: fanned,
   });
   if (slot) state.markSlotDelivered(slot);
@@ -219,9 +272,18 @@ export async function runScheduledDigest(client, state, rateLimit, { slot, label
 
   log.info(
     `Digest ${label} published: ${digest.stats.total} live, ${digest.stats.featuredCount} featured, ` +
-      `${fanned} subscriber(s) served${digest.quiet ? ' (quiet market)' : ''}.`,
+      `${fanned} subscriber(s) served${digest.quiet ? ' (quiet market)' : ''}` +
+      `${digest.incomplete ? ' (incomplete sweep — said so in the report)' : ''}.`,
   );
-  return { skipped: false, slot, fanned, quiet: digest.quiet, hash: digest.hash };
+  return {
+    skipped: false,
+    slot,
+    fanned,
+    quiet: digest.quiet,
+    incomplete: digest.incomplete,
+    signed: !!proof.signature,
+    hash: digest.hash,
+  };
 }
 
 export default { ensureServiceIntent, buildReport, finalizeFull, runScheduledDigest };

@@ -12,8 +12,13 @@
  *
  * The paid value is the contact handles, prices and full ranking; the free
  * renderings deliberately withhold those while still being genuinely useful.
- * Everything degrades gracefully: a quiet market yields a calm "nothing hot
- * right now" note rather than an empty page.
+ *
+ * Three states, not two. A round is QUIET when the board answered and had nothing
+ * hot on it; it is BLIND when the board did not answer at all; and it is PARTIAL
+ * when some sweeps answered and others did not. Only the first is a fact about the
+ * market. A blind round is rendered as what it is -- an admission -- and carries no
+ * proof-of-time, because the signature would be a timestamped assertion that the
+ * board was empty at a moment when this agent could not see the board.
  */
 
 import { createHash } from 'node:crypto';
@@ -90,12 +95,21 @@ export function buildDigest(scan, opts) {
   const { label, featuredFull, featuredFree, coinSymbol, nametag, oneTimeWhole, perDayWhole, audience } = opts;
   const featured = scan.featured ?? [];
   const pulse = scan.pulse ?? { total: 0, byType: {}, fresh: 0, freshWithinDays: 3, newest: [] };
-  const quiet = featured.length === 0 && pulse.total === 0;
+  const reach = scan.reach ?? null;
+  const blind = reach?.blind === true;
+  // Quiet is a claim, so it is only available when something actually answered.
+  const quiet = !blind && featured.length === 0 && pulse.total === 0;
+  const incomplete = !blind && reach?.partial === true;
+  const caveat = incomplete
+    ? `Note: ${reach.seedsFailed} of ${reach.seedsTried} sweep(s)` +
+      `${reach.pulseOk ? '' : ' and the recent-listings feed'} did not answer this round, ` +
+      `so the ranking below is incomplete rather than the whole board.`
+    : null;
 
   const stats = {
     total: pulse.total,
     fresh: pulse.fresh,
-    featuredCount: Math.min(featured.length, featuredFull),
+    featuredCount: blind ? 0 : Math.min(featured.length, featuredFull),
     byType: pulse.byType,
   };
 
@@ -104,7 +118,11 @@ export function buildDigest(scan, opts) {
 
   // ── FREE public teaser (broadcast) ──
   const teaserLines = [title];
-  if (quiet) {
+  if (blind) {
+    teaserLines.push(`I could not read the market this round — the board did not answer.`);
+    teaserLines.push(`No digest is being published for this slot. This is not a quiet market; it is`);
+    teaserLines.push(`an unread one, and I will not sign a report about intents I never saw.`);
+  } else if (quiet) {
     teaserLines.push(`The market is quiet right now — no live intents surfaced this round.`);
     teaserLines.push(`Next digest will catch the next wave. DM @${nametag} \`preview\` any time.`);
   } else {
@@ -121,12 +139,19 @@ export function buildDigest(scan, opts) {
     );
     teaserLines.push(`Free sample → DM \`preview\`.`);
   }
+  if (caveat) teaserLines.push(caveat);
   teaserLines.push(`— by CRYPTFRANI`);
   const teaser = teaserLines.join('\n');
 
   // ── FREE DM preview (a fuller taste; contacts/prices withheld) ──
   const previewLines = [title, ''];
-  if (quiet) {
+  if (blind) {
+    previewLines.push(`I could not read the market just now — neither the recent-listings feed nor any`);
+    previewLines.push(`semantic sweep answered, so I have nothing to tell you about the board.`);
+    previewLines.push('');
+    previewLines.push(`That is different from a quiet market, and I would rather say so than hand you`);
+    previewLines.push(`an empty page that reads like one. Try \`preview\` again shortly.`);
+  } else if (quiet) {
     previewLines.push(`The market is quiet right now — nothing notable is live this round.`);
     previewLines.push(`Check back after the next scheduled digest, or DM \`digest\` to be alerted.`);
   } else {
@@ -147,6 +172,7 @@ export function buildDigest(scan, opts) {
     previewLines.push(`   • One-off now:  DM \`digest\`  (${oneTimeWhole} ${coinSymbol})`);
     previewLines.push(`   • Every run:    DM \`subscribe <days>\`  (${perDayWhole} ${coinSymbol}/day)`);
   }
+  if (caveat) previewLines.push('', caveat);
   previewLines.push('', `— Daily Market Digest · by CRYPTFRANI`);
   const preview = previewLines.join('\n');
 
@@ -154,7 +180,16 @@ export function buildDigest(scan, opts) {
   const fullLines = [title];
   if (audience) fullLines.push(audience);
   fullLines.push('═'.repeat(60), '');
-  if (quiet) {
+  if (blind) {
+    fullLines.push(`NO REPORT THIS ROUND — THE MARKET COULD NOT BE READ`);
+    fullLines.push('');
+    fullLines.push(`  The recent-listings feed did not answer, and neither did any semantic sweep.`);
+    fullLines.push(`  I therefore know nothing about the state of the board at ${scan.scannedAt ?? 'this time'},`);
+    fullLines.push(`  and a report saying "the market is quiet" would be a claim I cannot support.`);
+    fullLines.push('');
+    fullLines.push(`  This page carries NO proof-of-time, on purpose. The signature is what makes a`);
+    fullLines.push(`  digest evidence, and there is nothing here to be evidence of.`);
+  } else if (quiet) {
     fullLines.push(`The market is quiet right now — no live intents cleared the relevance bar this round.`);
     fullLines.push(`This can happen off-peak. Your access still stands for the next scheduled digest.`);
   } else {
@@ -174,14 +209,31 @@ export function buildDigest(scan, opts) {
       fullLines.push('');
     });
   }
-  fullLines.push('─'.repeat(60));
-  fullLines.push(`How to reach a lister: DM their @handle on Unicity, or use the key shown.`);
+  if (caveat) fullLines.push('', `  ${caveat}`);
+  fullLines.push('', '─'.repeat(60));
+  if (!blind) fullLines.push(`How to reach a lister: DM their @handle on Unicity, or use the key shown.`);
   fullLines.push(`Thanks for supporting the digest. — Daily Market Digest · Owner Itachi · by CRYPTFRANI`);
   const fullCore = fullLines.join('\n');
 
   const hash = createHash('sha256').update(fullCore, 'utf8').digest('hex');
 
-  return { label, quiet, stats, teaser, preview, fullCore, hash, generatedAt: scan.scannedAt };
+  return {
+    label,
+    quiet,
+    blind,
+    incomplete,
+    // `signable` is the gate every caller checks before selling, publishing or
+    // signing this. A blind round is renderable (people are owed the admission)
+    // but never signable.
+    signable: !blind,
+    reach,
+    stats,
+    teaser,
+    preview,
+    fullCore,
+    hash,
+    generatedAt: scan.scannedAt,
+  };
 }
 
 /**
@@ -189,20 +241,29 @@ export function buildDigest(scan, opts) {
  * The signed message is `market-digest\n<iso>\n<sha256(body)>`; anyone can
  * verify it with verifySignedMessage(message, signature, signerPubkey).
  */
-export function signDigest(client, hash, generatedAt) {
+export function signDigest(client, hash, generatedAt, { signable = true } = {}) {
   const signedAt = generatedAt || new Date().toISOString();
   const message = `${PROOF_PREFIX}\n${signedAt}\n${hash}`;
   let signature = null;
-  try {
-    signature = client.signMessage(message);
-  } catch {
-    signature = null; // proof is a bonus, never block delivery on it
+  let unsignedBecause = null;
+  if (!signable) {
+    // Not an error path. The caller has told us the round is blind, and the one
+    // thing a signature must never do is certify a claim nobody could check.
+    unsignedBecause = 'the market could not be read this round';
+  } else {
+    try {
+      signature = client.signMessage(message);
+    } catch (err) {
+      signature = null; // proof is a bonus, never block delivery on it
+      unsignedBecause = `the signer did not answer (${err?.message ?? err})`;
+    }
   }
   return {
     signedAt,
     hash,
     message,
     signature,
+    unsignedBecause,
     signerPubkey: client.identity?.chainPubkey || null,
     signerNametag: client.nametag || null,
   };
@@ -210,7 +271,22 @@ export function signDigest(client, hash, generatedAt) {
 
 /** Append a verifiable proof-of-time block to the paid report body. */
 export function renderFull(digest, proof) {
-  if (!proof?.signature) return digest.fullCore;
+  if (!proof?.signature) {
+    // The body already explains a blind round. Any OTHER reason a proof is missing
+    // has to be said out loud: `help`, `about` and the market advert all promise a
+    // signed proof-of-time, and a report that quietly arrives without one looks
+    // exactly like a report that was never signed at all.
+    if (digest.blind) return digest.fullCore;
+    const why = proof?.unsignedBecause ?? 'the signer did not answer';
+    return [
+      digest.fullCore,
+      '',
+      '🔏 PROOF OF TIME — UNAVAILABLE',
+      `  This report is NOT signed: ${why}.`,
+      `  The market data above stands; the portable proof does not exist. Ask again`,
+      `  next round, or DM \`status\` — a report without its signature is not evidence.`,
+    ].join('\n');
+  }
   const block = [
     '',
     '🔏 PROOF OF TIME (verifiable)',

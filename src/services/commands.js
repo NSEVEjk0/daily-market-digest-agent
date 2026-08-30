@@ -14,6 +14,10 @@
  *   2. settle  → on an incoming UCT transfer, fulfil the requester's OLDEST
  *      pending purchase (deliver report / activate subscription), refund any
  *      overpayment. Underpayment or a fulfilment error refunds the full amount.
+ *
+ * The product is a signed claim about the market, so there is one thing this file
+ * will not sell: a report from a round in which the market could not be read. That
+ * is a refund, in full, not a discount and not an empty page — see `refuseBlind`.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -147,10 +151,18 @@ function statusText(client, state, dm) {
     `Schedule : ${describeSchedule(config.schedule.times)} (local)`,
     `Next run : ${next ? prettyStamp(next.scheduledAt) : 'n/a'}`,
   ];
-  if (last) {
+  if (last?.blind) {
+    // Say it in `status` too. A published-nothing round that only shows up in the
+    // operator's journal is indistinguishable, from outside, from a round that
+    // never came due at all.
+    lines.push(`Last run : ${last.label} — NOT PUBLISHED: the market did not answer, so nothing was signed or sent`);
+    lines.push(`           the slot is still owed and will be served as soon as the board responds`);
+  } else if (last) {
     lines.push(
-      `Last run : ${last.label} — ${last.live} live listings, ${last.featured} featured${last.quiet ? ' (quiet market)' : ''}`,
+      `Last run : ${last.label} — ${last.live} live listings, ${last.featured} featured${last.quiet ? ' (quiet market)' : ''}` +
+        `${last.incomplete ? ' (incomplete sweep, flagged in the report)' : ''}`,
     );
+    if (last.signed === false) lines.push(`           that report went out UNSIGNED — the signer did not answer`);
   } else {
     lines.push(`Last run : none yet this session`);
   }
@@ -291,20 +303,41 @@ function uctAmount(client, transfer) {
     .reduce((acc, t) => acc + BigInt(t.amount ?? '0'), 0n);
 }
 
+/**
+ * Refuse to hand over a report about a market nobody could read.
+ *
+ * Thrown, not returned, so it lands in `settlePayment`'s existing fulfilment-error
+ * path and the buyer is refunded in full by the same code that handles every other
+ * failure. The alternative — delivering the blind round's "could not read the
+ * board" page and keeping the 5 UCT — would be charging for an admission.
+ */
+function refuseBlind(digest) {
+  if (digest.blind !== true) return;
+  const err = new Error('the market could not be read');
+  err.blind = true;
+  throw err;
+}
+
 async function fulfillOneTime(client, state, sender, senderNametag) {
   const sub = state.getSubscriber(sender);
   const topics = sub?.topics ?? null;
   const { digest } = await buildReport(client, { label: `${prettyStamp()} · on-demand`, topics });
+  refuseBlind(digest);
   return finalizeFull(client, digest).fullText;
 }
 
 async function fulfillSubscribe(client, state, sender, senderNametag, days) {
+  // Build BEFORE the subscription is written. If the build fails the caller refunds
+  // in full, and a refunded payment must not leave an activated subscription behind
+  // — that would be a free subscription created by an error path.
+  const existing = state.getSubscriber(sender);
+  const topics = existing?.topics?.length ? existing.topics : null;
+  const { digest } = await buildReport(client, { label: `${prettyStamp()} · subscription start`, topics });
+  refuseBlind(digest);
+  const body = finalizeFull(client, digest).fullText;
+
   const rec = state.upsertSubscriber(sender, { nametag: senderNametag ?? undefined, addDays: days });
   const daysLeft = Math.max(0, Math.ceil((rec.expiresAt - Date.now()) / 86_400_000));
-  // Bonus: deliver the current report immediately on activation.
-  const topics = rec.topics?.length ? rec.topics : null;
-  const { digest } = await buildReport(client, { label: `${prettyStamp()} · subscription start`, topics });
-  const body = finalizeFull(client, digest).fullText;
   const header =
     `✅ Subscription active — ~${daysLeft} day(s), full report every run (${describeSchedule(config.schedule.times)} local).\n` +
     `Here's your first report now:\n\n`;
@@ -368,20 +401,29 @@ export async function settlePayment(client, { transfer, state, rateLimit }) {
         ? await fulfillSubscribe(client, state, sender, transfer.senderNametag, purchase.days)
         : await fulfillOneTime(client, state, sender, transfer.senderNametag);
   } catch (err) {
-    log.error(`Fulfilment of ${purchase.kind} failed: ${err?.message ?? err}. Refunding.`);
-    const out = refundOutcome(await client.refund(sender, amountBase, `${config.nametag} refund — fulfilment failed`));
+    const blind = err?.blind === true;
+    const memo = blind ? `${config.nametag} refund — market unreadable` : `${config.nametag} refund — fulfilment failed`;
+    log.error(
+      blind
+        ? `Blind round: refusing to sell a ${purchase.kind} built on a market that did not answer. Refunding in full.`
+        : `Fulfilment of ${purchase.kind} failed: ${err?.message ?? err}. Refunding.`,
+    );
+    const out = refundOutcome(await client.refund(sender, amountBase, memo));
     noteSend(rateLimit);
+    const lead = blind
+      ? `I could not read the market just now — neither the listings feed nor any sweep answered — so there is no honest ${kindLabel} to send you, and I will not sign one.`
+      : `Sorry — I hit an error fulfilling your ${kindLabel}.`;
     if (!out.ok) {
       log.error(`Refund of ${client.toWhole(amountBase)} ${sym()} to ${recipient} did NOT go out (${out.why}). Owed and unpaid.`);
       await client.sendDM(
         recipient,
-        `Sorry — I hit an error fulfilling your ${kindLabel}, and I could not return your ${client.toWhole(amountBase)} ${sym()} either${owedTail(out)}. It is recorded as owed to you and ${config.brand} will settle it. — ${config.brand}`,
+        `${lead} I also could not return your ${client.toWhole(amountBase)} ${sym()} just now${owedTail(out)}. It is recorded as owed to you and ${config.brand} will settle it. — ${config.brand}`,
       );
       return;
     }
     await client.sendDM(
       recipient,
-      `Sorry — I hit an error fulfilling your ${kindLabel} and have refunded ${client.toWhole(amountBase)} ${sym()}. Please try again. — ${config.brand}`,
+      `${lead} I've refunded your ${client.toWhole(amountBase)} ${sym()} in full — nothing was charged. ${blind ? 'Try again shortly, or wait for the next scheduled digest.' : 'Please try again.'} — ${config.brand}`,
     );
     return;
   }

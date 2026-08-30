@@ -1,220 +1,304 @@
-# Daily Market Digest 📊
+# market-digest
 
-**An autonomous market-intelligence agent for the [Unicity](https://unicity.network) testnet2 network.**
+### It signs what it saw. When it cannot see, it publishes nothing and says so.
 
-**Track:** Autonomous agents — market intelligence and subscriptions
-**Agentic:** Yes — it scans, ranks, publishes and bills on a schedule of its own, with no human in the loop
-**Runs on AstridOS:** No — a Node.js daemon under `systemd` on Linux
-**Status:** Live on testnet2 as `@market-digest`, holding 100 UCT. Verified end-to-end on-network: 12 digest slots published on schedule, and a paid subscription taken and served for real UCT. The overpayment-refund path is pinned by an offline suite of 49 assertions rather than claimed on-network.
-**SDK:** `@unicitylabs/sphere-sdk` ^0.15.0 (`state-transition-sdk` 3.x)
-
-Built on the official [`@unicitylabs/sphere-sdk`](https://www.npmjs.com/package/@unicitylabs/sphere-sdk). `Daily Market Digest` claims the nametag **`@market-digest`**, lives on the network continuously as a background daemon, and — twice a day, on its own — scans the live market, ranks the most interesting intents, and publishes a digest: a free public teaser for everyone, and a full ranked report with contacts and prices for paying subscribers.
-
-> **Owner / Creator:** Itachi &nbsp;·&nbsp; **Made by CRYPTFRANI**
->
-> **Live agent address:** `DIRECT://0000f71f5f1c770100482e06cac3fa6c672b6995ad7556fca965346db25b7b5b120734b48b8b`
-
----
-
-## What it does
-
-`Daily Market Digest` is a good citizen of the Unicity **market** (a signed, semantic intent bulletin board). On a fixed schedule it fuses two reads of the market into one report, then delivers that report across a free and a paid tier.
-
-### 1. The scan (twice daily, automatic)
-- **Market pulse** — a cheap public read (`market.getRecentListings`) of the newest intents: how busy the board is, what kinds of intents are flowing, what's freshest.
-- **Featured intents** — broad semantic sweeps (`market.search`) across a spread of seed queries surface *contactable* results: nametag, price, relevance score. These are ranked, de-duplicated (near-identical bot listings collapse into one, flagged with a bulk-supply count), self-excluded, and expiry-filtered into a single ranked pool.
-
-### 2. Delivery — a free tier and a paid tier
-
-| Tier | Channel | What you get |
-|---|---|---|
-| **Public teaser** | Broadcast channel, every run | Market pulse + a taste of the top listings — free for everyone |
-| **Free preview** | DM `preview` | A fuller free sample: pulse, newest headlines, top matches (contacts/prices withheld) |
-| **Full report** | DM `digest` — **5 UCT** | The complete ranked report: every featured intent with **contact handles, prices, categories, relevance**, plus a signed **proof-of-time** |
-| **Subscription** | DM `subscribe <days>` — **3 UCT/day** | The full report auto-delivered every run until your subscription expires |
-
-**Free DM commands:** `help` · `about` · `status` · `preview` · `topics <a,b,c>` (personalize a subscription) · `cancel`.
-
-**Paid flow:** send `digest` or `subscribe <days>` → the agent replies with a **payment request** → you pay it → your report returns automatically over DM. Overpayment is **auto-refunded**; underpayment is refunded in full with an invitation to retry. The agent never holds your funds.
-
-### 3. Proof-of-time (verifiable)
-Every full report carries a secp256k1 signature over `market-digest\n<iso-time>\n<sha256(report)>`. Anyone can verify — with `verifySignedMessage()` from the SDK — that this exact digest existed at that time and was issued by `@market-digest`. The report is portable, tamper-evident evidence, not just text.
-
-### 4. Conservative by design
-- **Earn-only money policy** — the agent only *requests* and *receives* UCT. The single autonomous outbound payment it will ever make is **refunding an overpayment**. Its balance can only grow.
-- Hard **rate limits** (DMs/hour, actions/hour, fan-out/run), a **minimum-balance floor**, and a global **`DRY_RUN`** kill-switch.
-- **Idempotent & crash-safe** — atomic on-disk state with per-slot delivery keys and dedup rings; a restart never double-charges, double-delivers, or re-runs a slot it already served.
-- **Light footprint** — event-driven where possible, gentle polling, minimal CPU/RAM. Safe to run beside other nodes on a modest VPS.
-
----
-
-## Install & run (testnet2)
-
-> Requires **Node.js ≥ 22** (native `WebSocket` + `fetch`, used by the SDK's live market feed).
-
-```bash
-git clone https://github.com/NSEVEjk0/daily-market-digest-agent.git
-cd daily-market-digest-agent
-npm install
-
-# Configure (all values have safe defaults)
-cp .env.example .env        # optional; edit if you want to override anything
-
-# Inspect identity + balance without starting the loop
-npm run whoami
-
-# Preview all three renderings (teaser / preview / full) without publishing
-npm run preview
-
-# Start the autonomous agent
-npm start
+```
+Slot 2026-08-31@08:00: the market could not be read (recent-listings feed silent,
+10/10 sweeps silent). Publishing nothing, signing nothing, and leaving the slot OPEN
+so a later tick can serve it.
 ```
 
-First launch generates a brand-new identity, registers `@market-digest`, and (unless disabled) performs a **one-time capped self-mint** of test UCT — testnet2 has no faucet.
+That is the whole product, stated as a refusal. `@market-digest` scans the Unicity
+testnet2 market twice a day and publishes a ranked digest of live intents, free to
+everyone and in full to subscribers. Attached to every full report is a secp256k1
+signature over `market-digest\n<issued-iso>\n<sha256(report)>` — a portable,
+timestamped assertion that the board looked like *this* at *that* moment, checkable
+by anyone with the SDK's `verifySignedMessage()` and no trust in the agent.
 
-### Commands
-| Command | What it does |
+Which makes one SDK behaviour load-bearing here in a way it is not anywhere else in
+the fleet: **`market.getRecentListings()` and `market.search()` fail soft.** An
+unreachable market-api and an empty market are the *same value* at the call site.
+Read the silence as data and the next digest reads "The market is quiet right now —
+no live intents surfaced this round", gets signed, gets timestamped, gets broadcast
+publicly, and gets sold for 5 UCT. Every word of it false, in a form the reader is
+invited to treat as evidence.
+
+This was not hypothetical. The market-api was returning HTTP 000 fleet-wide while
+this was written.
+
+| | |
 |---|---|
-| `npm start` | Run the autonomous agent loop |
-| `npm run whoami` | Print identity, address, nametag and balance, then exit |
-| `npm run doctor` | Connectivity / config self-check, then exit |
-| `npm run mint` | Manually trigger a capped self-mint, then exit |
-| `npm run preview` | Build & print a digest (all three renderings), then exit |
-| `npm run run-now` | Generate + publish a digest immediately (out of schedule), then exit |
+| **Submission track** | **Autonomous agents** — scheduled market intelligence |
+| **Agentic** | Yes. It decides when to run, what to scan, what to rank, what to publish, what to sign, what to charge, and — the interesting one — when to refuse. No human is in any of those loops. |
+| **Runs on AstridOS** | No — a Node.js daemon under `systemd` on Linux |
+| **Live on** | Unicity **testnet2** as `@market-digest`, corpus 100 UCT |
+| **Address** | `DIRECT://0000f71f5f1c770100482e06cac3fa6c672b6995ad7556fca965346db25b7b5b120734b48b8b` |
+| **Chain pubkey** | `02fb1491e118aed2dfa96f8602ba2f17c3df67b5ee614d095684b85876d01cdd13` |
+| **SDK** | `@unicitylabs/sphere-sdk` ^0.15.0 (`state-transition-sdk` 3.x) |
+| **Verified on-network** | 12 scheduled slots published and signed for real, one inbound UCT payment settled, one subscriber on the book — the schedule → scan → rank → sign → publish → fan-out lifecycle end to end |
+| **Owner / Creator** | Itachi · Made by **CRYPTFRANI** |
 
 ---
 
-## Configuration
+## Three states, not two
 
-All settings are environment variables resolved in [`src/config.js`](src/config.js); every one has a safe default. See [`.env.example`](.env.example) for the full annotated list. The most common:
+Most agents that read a feed have two outcomes: it worked, or it threw. This one has
+three, because a signature makes the difference expensive.
+
+| State | What actually happened | What the agent does |
+|---|---|---|
+| **QUIET** | The board answered, and had nothing on it | Publish it, sign it, sell it. "Empty" is a real observation and worth certifying. |
+| **PARTIAL** | Some sweeps answered, some did not | Publish and sign — with a caveat in the body naming how many reads failed, so the ranking is not passed off as the whole board |
+| **BLIND** | Nothing answered at all | Publish nothing. Sign nothing. Sell nothing. **Leave the slot open.** |
+
+The rule that separates them is eight lines and takes no arguments from the world:
+
+```js
+// src/market.js
+export function reachOf({ pulseOk, seedsTried, seedsFailed }) {
+  const seedsOk = Math.max(0, seedsTried - seedsFailed);
+  const blind = !pulseOk && (seedsTried === 0 || seedsOk === 0);
+  return { pulseOk: !!pulseOk, seedsTried, seedsFailed, seedsOk, blind,
+           partial: !blind && (!pulseOk || seedsFailed > 0) };
+}
+```
+
+Note what is *not* in that return value: any count of what was found. Reachability
+is computed from **who answered**, never from how much they returned — which is the
+entire distinction the fail-soft SDK erases. Every read in `market.js` now reports
+`ok` alongside its data, so `{ok: true, total: 0}` (a quiet board) and
+`{ok: false, total: 0}` (an outage) are different values again.
+
+---
+
+## The slot is the only thing that remembers a report is owed
+
+`deliveredSlots` is a set of keys like `2026-08-31@08:00`. It is the sole record that
+a scheduled digest has been served, and the sole thing standing between one slot and
+two digests.
+
+So a blind round has to be careful in a way that is easy to get backwards. The
+tempting shape is "we tried, mark it done, move on". That silently converts a
+one-minute outage into a permanently lost publication — and `status` then reports a
+digest that was never published. Instead:
+
+- nothing is broadcast, nothing is DMed, nothing is signed;
+- `lastDigest` records `blind: true, hash: null`, so `status` says the slot is still owed;
+- the slot key is **not** written;
+- the next tick inside the catch-up grace window (90 min by default) retries it, and
+  it fires exactly once when the board answers.
+
+Subscribers' own `lastDeliveredSlot` markers are left alone for the same reason. A
+blind round costs nobody a delivery.
+
+The scheduler that decides all of this (`src/scheduler.js`) imports **nothing** —
+not config, not state, not the SDK — contains no `await` and never reads the clock
+itself: `now` is always passed in. That is what makes the blackout in the demo
+testable at a fixed instant on a fixed date.
+
+---
+
+## What it costs, and what happens when it cannot be built
+
+| Tier | Channel | What arrives |
+|---|---|---|
+| **Public teaser** | Broadcast, every run | Market pulse and a taste of the top listings — free |
+| **Free preview** | DM `preview` | A fuller sample: pulse, newest headlines, top matches with contacts withheld |
+| **Full report** | DM `digest` — **5 UCT** | Every ranked intent with handles, prices, categories, relevance scores, plus the proof-of-time |
+| **Subscription** | DM `subscribe <days>` — **3 UCT/day** | The full report every run until it lapses; `topics a,b,c` personalizes the sweeps |
+
+The agent never pulls funds. It replies with a **payment request** that sits in your
+wallet until you approve it. Its only autonomous outbound payment is giving money
+back.
+
+**And it gives money back when it cannot deliver.** A `digest` paid for during an
+outage is refunded in full, and the reply says why:
+
+> I could not read the market just now — neither the listings feed nor any sweep
+> answered — so there is no honest full digest to send you, and I will not sign one.
+> I've refunded your 5 UCT in full — nothing was charged.
+
+Not "here is a page explaining that I am blind, that will be 5 UCT". A blind
+subscription purchase is refunded too — and creates **no subscription**, because a
+refunded payment that leaves an activated subscription behind is a free subscription
+manufactured by an error path. That ordering is a fix, not an accident: the report is
+built *before* the subscriber row is written.
+
+A refund that itself fails is never reported as a refund. It is named, booked as
+owed, and logged loudly for a human — the same contract as the overpayment path,
+pinned by its own suite.
+
+---
+
+## See it refuse, in one command
+
+```bash
+npm install
+npm run demo
+```
+
+The walk-through drives the real scheduler, the real scan, the real ranker, the real
+signer, the real delivery lifecycle and the real ledger against a **fake market and
+a fake wallet**. It does not import `sphere-client.js`, not even transitively, so it
+cannot open a second connection on the live identity even by mistake — safe to run
+while the daemon is up, unlike `whoami`.
+
+- **Happy path** — a slot comes due, the board is scanned, the teaser is broadcast,
+  the paid report is signed and delivered to a subscriber. The demo then verifies
+  that proof itself, re-derives the sha256 from the delivered bytes, inflates one
+  figure in the report, and watches the hash stop matching. A second tick publishes
+  nothing, because the slot is spent.
+- **Failure path** — the market-api goes dark. The next slot is blind: nothing
+  published, nothing signed, nobody charged, **and the slot not consumed**. A buyer
+  who paid mid-outage is refunded in full. Then the board answers and the same slot
+  fires exactly once.
+
+It closes by counting every claim it made and what backed each one.
+
+---
+
+## The DM surface
+
+```
+help · about · status          what it is, and whether the last slot actually published
+preview                        a free sample of the current round
+digest                         the full ranked report (5 UCT)
+subscribe <days>               every run, delivered (3 UCT/day)
+topics a, b, c                 personalize the sweeps behind your report
+cancel                         stop a subscription
+```
+
+`status` is worth reading after an outage: it distinguishes *published*, *published
+but flagged incomplete*, *published unsigned because the signer did not answer*, and
+*not published — the market did not answer, so the slot is still owed*.
+
+---
+
+## Running it
+
+```bash
+npm install
+cp .env.example .env      # optional — every value has a safe default
+
+npm run doctor            # connectivity + config self-check
+npm run whoami            # identity, address, balance
+npm run preview           # build all three renderings, publish nothing
+npm run run-now           # publish immediately, out of schedule
+npm run demo              # the offline walk-through (safe while running)
+npm start                 # the autonomous daemon
+
+npm test                  # two offline suites, 170 assertions
+```
+
+Node ≥ 22 (the SDK's live market feed needs native `WebSocket`/`fetch`). First launch
+generates a BIP39 identity, claims the nametag, and performs a **one-time capped
+self-mint** — testnet2 has no faucet. The phrase prints once and lands in
+`wallet-data/` (gitignored, 0600): back it up offline, set `WALLET_PASSWORD` to
+encrypt it at rest, delete the directory to start over.
+
+> Do not run `whoami`/`doctor`/`preview` while the service is up — each boots a
+> second Sphere instance on the same wallet. Use `journalctl -u market-digest-agent`
+> or the DM `status`. `npm run demo` is the exception: it never opens a connection.
+
+### As a service
+
+```ini
+# /etc/systemd/system/market-digest-agent.service
+[Service]
+WorkingDirectory=/root/market-digest-agent
+ExecStart=/usr/bin/node --max-old-space-size=500 src/index.js
+Restart=always
+RestartSec=5
+KillSignal=SIGINT        # graceful: stop timers → persist state → close socket
+MemoryAccounting=yes
+MemorySwapMax=5G         # RAM uncapped so the kernel never cgroup-OOMs it; swap bounded
+```
+
+```bash
+sudo systemctl daemon-reload && sudo systemctl enable --now market-digest-agent
+journalctl -u market-digest-agent -f
+```
+
+### Configuration
+
+Every knob has a conservative default, so an absent `.env` still runs a valid agent.
+Full annotated list in [`.env.example`](.env.example); the ones that change what it
+publishes:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `AGENT_NAME` | `market-digest` | Nametag to claim (alias: `NAMETAG`) |
-| `UNICITY_NETWORK` | `testnet2` | Network to run against (alias: `NETWORK`) |
-| `DIGEST_TIMES` | `08:00,20:00` | Local-time slots when the digest runs |
-| `DIGEST_PRICE_UCT` | `5` | One-time price for the full report |
-| `SUBSCRIBE_PRICE_PER_DAY_UCT` | `3` | Subscription price per day |
+| `DIGEST_TIMES` | `08:00,20:00` | local-time slots the digest runs |
+| `CATCHUP_GRACE_MIN` | `90` | how long an owed slot stays servable after its time |
+| `DIGEST_TOPICS` | 10 seeds | the semantic sweeps behind the ranking |
+| `SCAN_PER_SEED_LIMIT` | `40` | search width per sweep — wide, to get past stale index entries |
+| `DIGEST_FEATURED_FULL` / `_FREE` | `8` / `3` | items in the paid report vs the free teaser |
+| `DIGEST_MIN_SCORE` | `0.25` | relevance floor an intent must clear to be featured |
+| `DIGEST_PRICE_UCT` | `5` | one-off price for the full report |
+| `SUBSCRIBE_PRICE_PER_DAY_UCT` | `3` | subscription price per day |
+| `BROADCAST_ENABLED` | `true` | `false` = build and sell, publish no public teaser |
+| `DRY_RUN` | `false` | log every intended action, touch nothing |
 
 ---
 
-## Deployment — systemd (background daemon)
-
-`Daily Market Digest` is designed to run as a persistent, auto-restarting service.
-
-**`/etc/systemd/system/market-digest-agent.service`**
-
-| Setting | Value |
-|---|---|
-| `WorkingDirectory` | `/root/market-digest-agent` |
-| `ExecStart` | `/usr/bin/node --max-old-space-size=500 src/index.js` |
-| `Restart` / `RestartSec` | `always` / `5s` |
-| `Environment` | `NODE_ENV=production`, `NODE_OPTIONS=--max-old-space-size=500` |
-| V8 heap cap | ~500 MB (`--max-old-space-size=500`) |
-| `MemorySwapMax` | `5G` — physical RAM left uncapped so the kernel pages to swap under load instead of OOM-killing the process |
-| `KillSignal` | `SIGINT` → triggers graceful shutdown (persist state → close connection) |
-| Logs | journald → `journalctl -u market-digest-agent -f` |
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now market-digest-agent
-systemctl status market-digest-agent
-journalctl -u market-digest-agent -f       # live logs
-```
-
-> Tip: for a running service, inspect it with `journalctl` / `systemctl status`. Run `npm run whoami` / `doctor` / `preview` only while the service is **stopped**, or they open a second connection as `@market-digest`.
-
----
-
-## Identity & the mnemonic — read this
-
-On first run the agent creates a wallet and prints a **BIP39 recovery phrase (mnemonic)** once, then writes it to `wallet-data/`.
-
-- **`wallet-data/` is gitignored and must stay secret.** It contains the mnemonic and derived keys — anyone with it controls `@market-digest` and its funds.
-- Set **`WALLET_PASSWORD`** in `.env` to encrypt the mnemonic at rest (PBKDF2). Without it, the phrase is stored in plaintext (fine for a throwaway testnet identity, risky on a shared box).
-- **Back up the phrase** shown on first run somewhere safe and offline. It is the only way to recover the identity if `wallet-data/` is lost.
-- To start over with a fresh identity, stop the agent and delete `wallet-data/`.
-
----
-
-## Rewards & ownership → Itachi / CRYPTFRANI
-
-`@market-digest` is a service run **by Itachi under the CRYPTFRANI banner**. Its identity metadata, its advertised market intent, and every public-facing message it sends attribute it to CRYPTFRANI, and every unit of UCT it earns (report sales, subscriptions, tips) accrues to **this single wallet — owned and controlled by Itachi**. There is no separate treasury or split: the agent *is* the CRYPTFRANI-owned wallet, so rewards flow directly and verifiably back to its owner.
-
----
-
-## Project structure
+## Files
 
 ```
-daily-market-digest-agent/
-├── package.json
-├── .env.example          # annotated settings
-├── .gitignore
-├── README.md
-└── src/
-    ├── index.js          # entrypoint: boot, modes (--whoami/--doctor/--mint/--preview/--run-now), graceful shutdown
-    ├── config.js         # env-based settings + safety rails
-    ├── logger.js         # lightweight leveled logger
-    ├── state.js          # persisted state (dedup rings, pending purchases, subscribers)
-    ├── ratelimit.js      # sliding-window rate limiter (polite, no timers)
-    ├── scheduler.js      # pure slot math: due/next slot, catch-up, pretty stamps
-    ├── sphere-client.js  # identity/wallet setup, providers, balance, mint, refunds
-    ├── market.js         # market scan: pulse + semantic sweep, rank, de-dupe
-    ├── digest.js         # report builder: teaser / preview / full + proof-of-time
-    ├── agent.js          # the autonomous loop + event wiring
-    └── services/
-        ├── delivery.js   # scan → build → sign → broadcast → fan-out to subscribers
-        └── commands.js   # DM commands + purchase / subscription fulfilment & refunds
+src/
+  scheduler.js      PURE: slot keys, what is due, the catch-up window. No clock, no imports.
+  market.js         the two market reads — each reporting whether it ANSWERED, plus reachOf()
+  digest.js         the three renderings (teaser / preview / paid) + the proof-of-time signer
+  state.js          crash-safe ledger: delivered slots, subscribers, pending orders, dedup rings
+  services/
+    delivery.js     scan → build → sign → broadcast → fan out; the blind-round refusal
+    commands.js     the DM router, purchase settlement, and refuseBlind()
+  sphere-client.js  SDK wiring, the wallet reads, the one outbound refund rail
+  agent.js          the 1-minute tick: due slot? events? subscriptions to prune?
+  demo.js           the offline walk-through (real engine, fake market)
+  config.js  logger.js  ratelimit.js  index.js
+wallet-data/        mnemonic + state.json — GITIGNORED, 0700/0600
 ```
 
----
+State is written temp-file-plus-rename, so a crash mid-write cannot truncate the
+ledger. Inbound DM ids and transfer ids are de-duplicated and persisted *before*
+they are acted on, so a relay replay cannot double-charge or double-deliver.
 
-## Tests
+## Proof it holds
 
 ```bash
 npm test
 ```
 
-Two offline suites, 68 assertions, no network, wallet or funds:
+**170 assertions across two offline suites** — no network, no market, no wallet, no
+funds.
 
-`test-refund-truth-unit.mjs` — 49 assertions, 23 of which fail without the fix. It pins the
-rule that the agent **never claims a refund that did not go out**, and never returns money
-silently: `help` and `about` both promise in writing that overpayment comes back, so an
-unannounced *successful* refund is an unexplained transfer, and an unannounced *failed* one
-is the difference quietly kept. An unconfirmed certification is its own third answer — never
-retried, never claimed.
+| Suite | What it pins |
+|---|---|
+| `test-blind-digest-unit.mjs` | 121 assertions, **42 of which fail** if the blind-scan gate is reverted. An unreachable market is never rendered as a quiet one, never signed, never broadcast, never sold, and never counted as a delivered slot; a genuinely empty board still *is* published and signed, because "the board was empty" is a real observation. Also pins the proof-of-time format byte for byte, and asserts `scheduler.js`'s purity structurally — no imports, no `await`, no `Date.now()`. |
+| `test-refund-truth-unit.mjs` | 49 assertions. Money is only ever *described* as returned when it actually went out: underpayment, overpayment and fulfilment failure each get the truthful reply, and a refund the wallet-api could not confirm is neither retried nor claimed. |
 
-`test-balance-outage-unit.mjs` — 19 assertions, 6 of which fail without the fix. It pins the
-rule that a wallet-api outage is **never read as a zero balance**. `payments.assets()`
-resolves with an empty array when the backend is unreachable rather than throwing, so at the
-call site an outage and an empty wallet look identical. Two things went wrong on that: a
-withheld refund blamed the min-balance floor when the wallet in fact held funds, and the
-one-time bootstrap would have fired a *second* self-mint onto an already-funded wallet. The
-send still fails closed — it just says why truthfully now. The mint refusal is scoped to a
-*pre-existing* wallet: one generated on this very boot cannot already hold funds, so there
-the silence really is a zero and a brand-new identity still performs its documented
-one-time self-mint.
-
-The suites that move real UCT are deliberately **not** published: they embed an oracle
-API key and read a wallet mnemonic. `.gitignore` keeps `test-*.mjs` ignored by default and
-negates only the offline ones, so a new live test stays private unless someone opts it in.
+The suites that move real UCT are deliberately **not** published — they embed an
+oracle API key and read a mnemonic. `.gitignore` ignores `test-*.mjs` by default and
+negates only the two offline files, so a new live test stays private unless somebody
+opts it in.
 
 ---
 
-## Disclaimer
+## Sibling agents (CRYPTFRANI fleet, testnet2)
 
-Runs on **testnet2** with test-only UCT. Not financial software; provided as-is for experimentation on the Unicity network.
+This is the fleet's **publisher**: the only one whose output is a signed claim about
+the outside world rather than about its own dealings. That is why it is the only one
+that has to reason about what it could not see.
+
+| Agent | Primitive |
+|---|---|
+| **@market-digest** | a schedule and a signed report — this one |
+| **@frani-treasury** | grants, loans, repayment reputation |
+| **@frani-agent** | market discovery and standing watches (no send path exists at all) |
+| **@frani-agora** | signed quote → invoice → settlement certificate |
+| **@frani-bounty** | bounty escrow, poster vs worker |
 
 ---
 
-## License
+Runs on **testnet2** with test-only UCT. Not financial software; provided as-is.
 
 MIT © Itachi (CRYPTFRANI) — see [LICENSE](LICENSE).
-
----
-
-<div align="center">
-
-**Made by CRYPTFRANI** · Agent owner/creator: **Itachi**
-
-</div>

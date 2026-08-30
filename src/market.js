@@ -16,6 +16,14 @@
  *
  * We run a handful of broad seed queries, normalize + dedupe + score-filter the
  * hits, drop our own advert, and return a single ranked pool the digest slices.
+ *
+ * ONE RULE GOVERNS THIS FILE. Both SDK reads fail soft: a search that cannot reach
+ * the board returns nothing, and so does a search over an empty board. Every read
+ * here therefore reports whether it was ANSWERED separately from what it FOUND, and
+ * `scanMarket` returns that verdict as `reach`. Downstream, a digest built from a
+ * scan that nothing answered is not published, not signed and not sold -- because
+ * this agent's output is a timestamped signature over a claim about the market, and
+ * "the market is quiet" is a different claim from "I could not see the market".
  */
 
 import { createLogger } from './logger.js';
@@ -23,6 +31,32 @@ import { createLogger } from './logger.js';
 const log = createLogger('market');
 
 const DAY_MS = 86_400_000;
+
+/**
+ * The reachability verdict for one scan, and the only place the rule lives.
+ *
+ *   blind    nothing answered. The agent knows NOTHING about the market this
+ *            round, so it has nothing it may sign, publish or sell.
+ *   partial  something answered and something did not. The report may go out,
+ *            but it must say out loud that the sweep was incomplete -- a ranked
+ *            list built from half the sweeps is not "the top of the market".
+ *
+ * `blind` deliberately requires BOTH reads to have failed. A board whose semantic
+ * index is down but whose recent-listings feed answers is still observable, and
+ * refusing to publish then would be its own kind of dishonesty.
+ */
+export function reachOf({ pulseOk, seedsTried, seedsFailed }) {
+  const seedsOk = Math.max(0, seedsTried - seedsFailed);
+  const blind = !pulseOk && (seedsTried === 0 || seedsOk === 0);
+  return {
+    pulseOk: !!pulseOk,
+    seedsTried,
+    seedsFailed,
+    seedsOk,
+    blind,
+    partial: !blind && (!pulseOk || seedsFailed > 0),
+  };
+}
 
 /** Normalize one semantic-search hit to the shape the digest speaks. */
 function normalizeSearchHit(r) {
@@ -91,13 +125,20 @@ export async function searchSupply(client, query, { limit = 8, minScore = 0, exc
     res = await client.sphere.market.search(query, { limit });
   } catch (err) {
     log.warn(`search("${query}") failed: ${err?.message ?? err}`);
-    return [];
+    // `ok: false` is the whole point of this return shape. A sweep that never
+    // reached the board and a sweep that reached it and found nothing both yield
+    // zero hits, and only one of them is a fact about the market.
+    return { ok: false, hits: [] };
+  }
+  if (!res || !Array.isArray(res.intents)) {
+    log.warn(`search("${query}") returned no intents array -- treating as unreachable.`);
+    return { ok: false, hits: [] };
   }
   const now = Date.now();
   const self = client.selfPubkeys();
   const seen = new Set();
   const out = [];
-  for (const raw of res?.intents ?? []) {
+  for (const raw of res.intents) {
     const intent = normalizeSearchHit(raw);
     if (!intent.id || seen.has(intent.id)) continue;
     if (intent.score < minScore) continue;
@@ -109,20 +150,26 @@ export async function searchSupply(client, query, { limit = 8, minScore = 0, exc
     out.push(intent);
   }
   out.sort((a, b) => b.score - a.score);
-  return out;
+  return { ok: true, hits: out };
 }
 
 /**
  * The public "pulse" from the recent-listings feed: totals, a per-type breakdown,
- * a freshness count, and the newest few headlines. Never throws — a market with
- * no public feed just yields zeros.
+ * a freshness count, and the newest few headlines.
+ *
+ * Never throws, and never lies about why it is empty. `ok: false` means the feed
+ * did not answer; `ok: true` with `total: 0` means the board really is empty. The
+ * digest is signed, so those two must not collapse into the same sentence.
  */
 export async function marketPulse(client, { freshWithinDays = 3 } = {}) {
-  let listings = [];
+  let listings = null;
   try {
-    listings = (await client.sphere.market.getRecentListings()) ?? [];
+    listings = await client.sphere.market.getRecentListings();
   } catch (err) {
     log.warn(`getRecentListings failed: ${err?.message ?? err}`);
+  }
+  if (!Array.isArray(listings)) {
+    return { ok: false, total: 0, byType: {}, fresh: 0, freshWithinDays, newest: [] };
   }
   const now = Date.now();
   const self = client.selfPubkeys();
@@ -144,7 +191,7 @@ export async function marketPulse(client, { freshWithinDays = 3 } = {}) {
     agentName: (l.agentName || '').replace(/^@/, '') || null,
     ageHours: Math.max(0, Math.round(((now - (Date.parse(l.createdAt) || now)) / 3_600_000) * 10) / 10),
   }));
-  return { total: others.length, byType, fresh, freshWithinDays, newest };
+  return { ok: true, total: others.length, byType, fresh, freshWithinDays, newest };
 }
 
 /**
@@ -164,8 +211,10 @@ export async function scanMarket(client, { seeds, perSeedLimit, minScore, freshW
 
   // Sweep every seed, then merge on intent id keeping the highest score seen.
   const merged = new Map();
+  let seedsFailed = 0;
   for (const seed of seeds) {
-    const hits = await searchSupply(client, seed, { limit: perSeedLimit, minScore });
+    const { ok, hits } = await searchSupply(client, seed, { limit: perSeedLimit, minScore });
+    if (!ok) seedsFailed++;
     for (const hit of hits) {
       const prev = merged.get(hit.id);
       if (!prev || hit.score > prev.score) merged.set(hit.id, { ...hit, seed });
@@ -176,12 +225,21 @@ export async function scanMarket(client, { seeds, perSeedLimit, minScore, freshW
     .sort((a, b) => b.score - a.score || (Date.parse(b.createdAt) || 0) - (Date.parse(a.createdAt) || 0))
     .slice(0, poolCap);
 
-  log.info(
-    `Scan complete: ${pulse.total} live listings, ${featured.length} ranked featured ` +
-      `(from ${seeds.length} seeds, minScore ${minScore}).`,
-  );
+  const reach = reachOf({ pulseOk: pulse.ok !== false, seedsTried: seeds.length, seedsFailed });
 
-  return { pulse, featured, scannedAt: new Date().toISOString(), seeds: [...seeds] };
+  if (reach.blind) {
+    log.warn(
+      `Scan BLIND: the recent-listings feed did not answer and all ${seeds.length} semantic ` +
+        `sweep(s) failed. No claim about the market can be made from this round.`,
+    );
+  } else {
+    log.info(
+      `Scan complete: ${pulse.total} live listings, ${featured.length} ranked featured ` +
+        `(from ${seeds.length - seedsFailed}/${seeds.length} seeds that answered, minScore ${minScore}).`,
+    );
+  }
+
+  return { pulse, featured, scannedAt: new Date().toISOString(), seeds: [...seeds], reach };
 }
 
 /**
@@ -190,17 +248,25 @@ export async function scanMarket(client, { seeds, perSeedLimit, minScore, freshW
  * niche topic surfaces too little to be worth a bespoke section.
  */
 export async function scanForTopics(client, topics, { perSeedLimit, minScore, fallback = [] }) {
-  if (!Array.isArray(topics) || topics.length === 0) return fallback;
+  if (!Array.isArray(topics) || topics.length === 0) {
+    return { featured: fallback, seedsTried: 0, seedsFailed: 0 };
+  }
   const merged = new Map();
+  let seedsFailed = 0;
   for (const topic of topics) {
-    const hits = await searchSupply(client, topic, { limit: perSeedLimit, minScore });
+    const { ok, hits } = await searchSupply(client, topic, { limit: perSeedLimit, minScore });
+    if (!ok) seedsFailed++;
     for (const hit of hits) {
       const prev = merged.get(hit.id);
       if (!prev || hit.score > prev.score) merged.set(hit.id, hit);
     }
   }
   const personalized = collapseByDescription([...merged.values()]).sort((a, b) => b.score - a.score);
-  return personalized.length ? personalized : fallback;
+  return {
+    featured: personalized.length ? personalized : fallback,
+    seedsTried: topics.length,
+    seedsFailed,
+  };
 }
 
-export default { scanMarket, marketPulse, searchSupply, scanForTopics };
+export default { scanMarket, marketPulse, searchSupply, scanForTopics, reachOf };
