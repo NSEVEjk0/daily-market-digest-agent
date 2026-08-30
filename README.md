@@ -2,6 +2,12 @@
 
 **An autonomous market-intelligence agent for the [Unicity](https://unicity.network) testnet2 network.**
 
+**Track:** Autonomous agents — market intelligence and subscriptions
+**Agentic:** Yes — it scans, ranks, publishes and bills on a schedule of its own, with no human in the loop
+**Runs on AstridOS:** No — a Node.js daemon under `systemd` on Linux
+**Status:** Live on testnet2 as `@market-digest`, holding 100 UCT. Verified end-to-end on-network: 12 digest slots published on schedule, and a paid subscription taken and served for real UCT. The overpayment-refund path is pinned by an offline suite of 49 assertions rather than claimed on-network.
+**SDK:** `@unicitylabs/sphere-sdk` ^0.15.0 (`state-transition-sdk` 3.x)
+
 Built on the official [`@unicitylabs/sphere-sdk`](https://www.npmjs.com/package/@unicitylabs/sphere-sdk). `Daily Market Digest` claims the nametag **`@market-digest`**, lives on the network continuously as a background daemon, and — twice a day, on its own — scans the live market, ranks the most interesting intents, and publishes a digest: a free public teaser for everyone, and a full ranked report with contacts and prices for paying subscribers.
 
 > **Owner / Creator:** Itachi &nbsp;·&nbsp; **Made by CRYPTFRANI**
@@ -163,9 +169,34 @@ daily-market-digest-agent/
 
 ---
 
+## Tests
+
+```bash
+npm test
+```
+
+`test-refund-truth-unit.mjs` — 49 offline assertions, 23 of which fail without the fix, and
+no network, wallet or funds. It pins the rule that the agent **never claims a refund that
+did not go out**, and never returns money silently: `help` and `about` both promise in
+writing that overpayment comes back, so an unannounced *successful* refund is an
+unexplained transfer, and an unannounced *failed* one is the difference quietly kept.
+An unconfirmed certification is its own third answer — never retried, never claimed.
+
+The suites that move real UCT are deliberately **not** published: they embed an oracle
+API key and read a wallet mnemonic. `.gitignore` keeps `test-*.mjs` ignored by default and
+negates only the offline one, so a new live test stays private unless someone opts it in.
+
+---
+
 ## Disclaimer
 
 Runs on **testnet2** with test-only UCT. Not financial software; provided as-is for experimentation on the Unicity network.
+
+---
+
+## License
+
+MIT © Itachi (CRYPTFRANI) — see [LICENSE](LICENSE).
 
 ---
 

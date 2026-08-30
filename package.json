@@ -13,7 +13,8 @@
     "doctor": "node src/index.js --doctor",
     "mint": "node src/index.js --mint",
     "run-now": "node src/index.js --run-now",
-    "preview": "node src/index.js --preview"
+    "preview": "node src/index.js --preview",
+    "test": "node test-refund-truth-unit.mjs"
   },
   "keywords": [
     "unicity",
