@@ -254,11 +254,27 @@ export class SphereClient {
   }
 
   // ── balance ───────────────────────────────────────────────────────────────
-  async spendableBase() {
+  /**
+   * Read our coin's asset row, and say whether we actually got one.
+   *
+   * `payments.assets()` resolves with an EMPTY ARRAY when the wallet-api cannot
+   * be reached — it does not throw. So "no row for our coin" is two different
+   * facts wearing the same clothes: a wallet that genuinely holds nothing, and a
+   * backend that never answered. Every caller that gates money has to tell them
+   * apart, because treating silence as zero means refusing a refund we can
+   * afford, or re-minting on a wallet that is already funded.
+   */
+  async _coinRow() {
     const assets = await this.sphere.payments.assets(this.coin.coinId);
-    const a = assets.find((x) => x.coinId === this.coin.coinId);
-    if (!a) return 0n;
-    return BigInt(a.confirmedAmount ?? a.totalAmount ?? '0');
+    const row = Array.isArray(assets)
+      ? assets.find((x) => x.coinId === this.coin.coinId)
+      : undefined;
+    return { present: !!row, row: row ?? {} };
+  }
+
+  async spendableBase() {
+    const { row } = await this._coinRow();
+    return BigInt(row.confirmedAmount ?? row.totalAmount ?? '0');
   }
 
   async spendableWhole() {
@@ -324,7 +340,14 @@ export class SphereClient {
   /** One-time bootstrap mint on first run if enabled and below the floor. */
   async bootstrapMintIfNeeded() {
     if (!config.safety.selfMintEnabled) return;
-    const balance = await this.spendableBase();
+    const { present, row } = await this._coinRow();
+    if (!present) {
+      // An unanswered balance read is not a zero balance. Minting here would
+      // create a second bootstrap on a wallet that may already be funded.
+      log.warn('Balance unavailable (wallet-api gave no asset row) — skipping bootstrap mint.');
+      return;
+    }
+    const balance = BigInt(row.confirmedAmount ?? row.totalAmount ?? '0');
     const floor = this.toBase(config.safety.minBalanceWhole);
     if (balance >= floor) {
       log.info(`Balance ${this.toWhole(balance)} ${this.coin.symbol} ≥ floor; no bootstrap needed.`);
@@ -345,7 +368,18 @@ export class SphereClient {
       log.warn(`[DRY_RUN] Would send ${this.toWhole(base)} ${this.coin.symbol} to ${recipient}.`);
       return { dryRun: true };
     }
-    const balance = await this.spendableBase();
+    const { present, row } = await this._coinRow();
+    if (!present) {
+      // Fail closed, but say why truthfully. Blaming the floor here would be a
+      // lie about our own balance: we do not know it. The caller reports this as
+      // "could not return it — still owed to you", which stays correct either way.
+      log.warn(
+        `Refusing send of ${this.toWhole(base)} — balance unavailable ` +
+          `(wallet-api gave no asset row); not guessing at the min-balance floor.`,
+      );
+      return { skipped: 'balance unavailable — could not confirm the min-balance floor' };
+    }
+    const balance = BigInt(row.confirmedAmount ?? row.totalAmount ?? '0');
     const floor = this.toBase(config.safety.minBalanceWhole);
     if (balance - base < floor) {
       log.warn(

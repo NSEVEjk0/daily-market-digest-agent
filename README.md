@@ -175,16 +175,26 @@ daily-market-digest-agent/
 npm test
 ```
 
-`test-refund-truth-unit.mjs` — 49 offline assertions, 23 of which fail without the fix, and
-no network, wallet or funds. It pins the rule that the agent **never claims a refund that
-did not go out**, and never returns money silently: `help` and `about` both promise in
-writing that overpayment comes back, so an unannounced *successful* refund is an
-unexplained transfer, and an unannounced *failed* one is the difference quietly kept.
-An unconfirmed certification is its own third answer — never retried, never claimed.
+Two offline suites, 66 assertions, no network, wallet or funds:
+
+`test-refund-truth-unit.mjs` — 49 assertions, 23 of which fail without the fix. It pins the
+rule that the agent **never claims a refund that did not go out**, and never returns money
+silently: `help` and `about` both promise in writing that overpayment comes back, so an
+unannounced *successful* refund is an unexplained transfer, and an unannounced *failed* one
+is the difference quietly kept. An unconfirmed certification is its own third answer — never
+retried, never claimed.
+
+`test-balance-outage-unit.mjs` — 17 assertions, 5 of which fail without the fix. It pins the
+rule that a wallet-api outage is **never read as a zero balance**. `payments.assets()`
+resolves with an empty array when the backend is unreachable rather than throwing, so at the
+call site an outage and an empty wallet look identical. Two things went wrong on that: a
+withheld refund blamed the min-balance floor when the wallet in fact held funds, and the
+one-time bootstrap would have fired a *second* self-mint onto an already-funded wallet. The
+send still fails closed — it just says why truthfully now.
 
 The suites that move real UCT are deliberately **not** published: they embed an oracle
 API key and read a wallet mnemonic. `.gitignore` keeps `test-*.mjs` ignored by default and
-negates only the offline one, so a new live test stays private unless someone opts it in.
+negates only the offline ones, so a new live test stays private unless someone opts it in.
 
 ---
 
