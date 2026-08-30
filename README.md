@@ -35,7 +35,7 @@ this was written.
 | **Address** | `DIRECT://0000f71f5f1c770100482e06cac3fa6c672b6995ad7556fca965346db25b7b5b120734b48b8b` |
 | **Chain pubkey** | `02fb1491e118aed2dfa96f8602ba2f17c3df67b5ee614d095684b85876d01cdd13` |
 | **SDK** | `@unicitylabs/sphere-sdk` ^0.15.0 (`state-transition-sdk` 3.x) |
-| **Verified on-network** | 12 scheduled slots published and signed for real, one inbound UCT payment settled, one subscriber on the book — the schedule → scan → rank → sign → publish → fan-out lifecycle end to end |
+| **Verified on-network** | 12 scheduled slots published and signed for real, and one inbound UCT payment settled and served — the schedule → scan → rank → sign → publish lifecycle, twelve times over, unattended |
 | **Owner / Creator** | Itachi · Made by **CRYPTFRANI** |
 
 ---
